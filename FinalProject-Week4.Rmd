@@ -1,0 +1,253 @@
+---
+title: "Final Project - Week 4"
+author: "Johnny Sandaire"
+date: "5/25/2020"
+output: html_document
+---
+
+Practical Machine Learning Week 4 Course Project  
+================================================  
+
+
+```{r, echo=FALSE}
+library(curl)
+message(sprintf("Run Report: %s\nR version: %s", Sys.time(), R.Version()$version.string))
+```
+
+> **Project Background**
+
+> Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+
+> **Project Data **
+
+> The training data for this project are available here: 
+
+> https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+> The test data are available here: 
+
+> https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+> The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment. 
+
+> **Submit Requirements**
+
+> The goal of this project is to predict the manner in which experiment participants conducted their assigned exercises, which is identified as their "classe" variable in the provided training set. Experiment results are expected to be the following:
+
+    1. How ML model was constructed
+    2. Cross validation usage description
+    3. The expected out of sample error
+    4. Model selection justification 
+    5. Predict 20 different test cases from experimental model 
+
+> 1. Submission should consist of a link to a Github repo with R markdown and compiled HTML file describing the analysis. Expected writeup is about or < 2000 words and the number of figures are less than 5.
+
+> 2. The experimental machine learning algorithm will also be applied to the 20 test cases. The 20 Predictions will be submitted in the required appropriate format to the programming assignment for automated grading.
+
+# 1.  Constructing Machine Learning Model:
+
+### Dataset Download & Preparation & Training Data:
+
+```{r}
+require(data.table)
+library(gbm)
+require(caret)
+require(parallel)
+require(doParallel)
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+train_data <- fread(url)
+dim(train_data)
+```
+
+Test Data:
+
+```{r}
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+test_data <- fread(url)
+dim(test_data)
+```
+
+Excluding null data from the dataset
+
+```{r}
+missing_data <- sapply(test_data, function (x) any(is.na(x) | x == ""))
+predictors <- !missing_data & grepl("belt|[^(fore)]arm|dumbbell|forearm", names(missing_data))
+pred_data <- names(missing_data)[predictors]
+names(pred_data)
+```
+
+Subset the primary dataset to include only the **predictor candidates** and the outcome variable, `classe`.
+
+```{r}
+varToInclude <- c("classe", pred_data)
+train_data <- train_data[, varToInclude, with=FALSE]
+dim(train_data)
+names(train_data)
+```
+
+Convert `classe` to a factor.
+
+```{r}
+train_data <- train_data[, classe := factor(train_data[, classe])]
+train_data[, .N, classe]
+```
+
+Split dataset to a 70% training and 30% validating dataset.
+
+```{r}
+seed <- as.numeric("234789")
+set.seed(seed)
+inTrain <- createDataPartition(train_data$classe, p=0.7)
+Train <- train_data[inTrain[[1]]]
+Valid <- train_data[-inTrain[[1]]]
+```
+
+Preprocess prediction variables by centering and scaling.
+
+```{r}
+X <- Train[, pred_data, with=FALSE]
+preProc <- preProcess(X)
+Xa <- predict(preProc, X)
+XTrain <- data.table(data.frame(classe = Train[, classe], Xa))
+```
+
+Apply the centering and scaling to the test dataset.
+
+```{r}
+X <- Valid[, pred_data, with=FALSE]
+Xa <- predict(preProc, X)
+XValid <- data.table(data.frame(classe = Valid[, classe], Xa))
+```
+
+Verify for near-zero variance.
+
+```{r}
+nzv <- nearZeroVar(XTrain, saveMetrics=TRUE)
+nzv
+```
+
+Examine groups of prediction variables.
+
+```{r histograms}
+histograms <- function (data, regex) {
+  col <- grep(regex, names(data))
+  col <- c(col, which(names(data) == "classe"))
+  require(reshape2)
+  n <- nrow(data)
+  XMelt <- melt(data[, col, with=FALSE][, rownum := seq(1, n)], id.vars=c("rownum", "classe"))
+  require(ggplot2)
+  ggplot(XMelt, aes(x=classe, y=value)) +
+    geom_violin(aes(color=classe, fill=classe), alpha=1/2) +
+    facet_wrap(~ variable, scale="free_y") +
+    scale_color_brewer(palette="Spectral") +
+    scale_fill_brewer(palette="Spectral") +
+    labs(x="", y="") +
+    theme(legend.position="none")
+}
+histograms(XTrain, "belt")
+histograms(XTrain, "[^(fore)]arm")
+histograms(XTrain, "dumbbell")
+histograms(XTrain, "forearm")
+```
+
+
+# 2. Model Training & Cross validation
+
+Model Fit of tuning parameters.
+
+```{r}
+model_rf <- train(classe ~ ., data=XTrain, method="rf", trControl = trainControl(method="cv"), number=3)
+model_rf
+hat_rf <- predict(model_rf, XTrain)
+```
+
+# 3. Expected out of sample error via the Confusion Matrix
+
+```{r}
+
+confusionMatrix(hat_rf, Train[, classe])
+
+```
+
+## Evaluate the model on the Validation dataset
+
+```{r}
+
+# model_rf Evaluation / validation
+hat_rf_valid <- predict(model_rf, XValid)
+```
+
+
+## Model Validation confusion Matrix
+
+```{r}
+confusionMatrix(hat_rf_valid, XValid[, classe])
+
+```
+
+# 4. Model selection justification 
+
+Display the final model
+
+```{r finalModel}
+varImp(model_rf)
+model_rf$finalModel
+```
+
+**The Model's estimated error rate is less than 1%.**
+** OOB estimate of  error rate: 0.71% **
+
+Save training model object for later.
+
+```{r}
+save(model_rf, file="model_rf")
+```
+
+
+# Predict on the test data
+
+Load the training model.
+
+```{r}
+load(file="model_rf", verbose=TRUE)
+```
+
+Get predictions and evaluate.
+
+```{r}
+XTest <- predict(preProc, test_data[, pred_data, with=FALSE])
+hat <- predict(model_rf, XTest)
+
+test_data <- cbind(hat , test_data)
+subset(test_data, select=names(test_data)[grep("belt|[^(fore)]arm|dumbbell|forearm", names(test_data), invert=TRUE)])
+```
+
+
+## Submission to Coursera
+
+Write submission files to `predictions`.
+
+```{r}
+n <- length(hat)
+mainDir <- getwd()
+path <- file.path(mainDir,"predictions")
+if(dir.exists(path))
+{
+  unlink(path, recursive = TRUE)
+  # for (i in 1:n)
+  # {
+  #   file.remove(c(dir(getwd(), paste0("subject_id_",i,".txt"),full.names = TRUE)))
+  # }
+}
+dir.create(path)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("subject_id_",i,".txt")
+    write.table(x[i],file=file.path(path, filename),quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(hat)
+```
